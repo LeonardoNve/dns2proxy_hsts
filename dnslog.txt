@@ -1,2 +1,1 @@
-2016-07-28 23:49:41 Client IP: 192.168.2.247    request is    www.um.es. IN A
-2016-07-28 23:50:15 Client IP: 192.168.2.247    request is    www.gooogle.es. IN A
+

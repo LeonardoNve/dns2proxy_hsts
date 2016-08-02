@@ -33,7 +33,6 @@ from time import sleep
 import argparse
 import json
 import sys
-from scapy.all import *
 
 consultas = {}
 spoof = {}
@@ -215,17 +214,6 @@ class ThreadSniffer(threading.Thread):
         #DEBUGLOG( self.getName(), " Sniffer Waiting connections....")
         go()
 
-def go():
-    global ip1
-    global dev
-    import pcapy
-
-    bpffilter = "dst host %s and not src host %s and !(tcp dst port 80 or tcp dst port 443) and (not host %s)" % (
-        ip1, ip1, adminip)
-    
-    DEBUGLOG( "Starting sniffing in (%s = %s)...." % (dev, ip1))
-    sniff(prn=parse_packet,store=0,filter=bpffilter)
-
     #cap = pcapy.open_live(dev, 255, 1, 0)
     #cap.setfilter(bpffilter)
 
@@ -245,35 +233,34 @@ def parse_packet(pkt):
     global ip1
     global consultas
     global ip2
-
+    from scapy.all import *
+    
     ip = pkt.getlayer(IP)
 
     #TCP protocol
-    if ip.proto == 6:
+    if str(ip.proto) == '6':
     	tcp = pkt.getlayer(TCP)
 
-        print
-        print "Paquete tcp: %s %s %s"%(ip.src,tcp.sport,tcp.dport)
-        print
         if consultas.has_key(ip.src):
-            DEBUGLOG(' ==> Source Address : ' + ip.src + ' *  Destination Address : ' + ip.dst)
-            DEBUGLOG(' Source Port : ' + tcp.sport + ' *  Dest Port : ' + tcp.dport)
+            DEBUGLOG(' ==> Source Address : ' + str(ip.src) + ' *  Destination Address : ' + str(ip.dst))
+            DEBUGLOG(' Source Port : ' + str(tcp.sport) + ' *  Dest Port : ' + str(tcp.dport))
             #            	print '>>>>  '+ip.src+' esta en la lista!!!!.....'
             comando = 'sh ./IPBouncer.sh %s %s %s %s' % (
-                ip2, tcp.dport, consultas[ip.src], tcp.dport)
+                ip2, str(tcp.dport), consultas[str(ip.src)], str(tcp.dport))
             os.system(comando)
             #print '>>>> ' + comando
             comando = '/sbin/iptables -D INPUT -p tcp -d %s --dport %s -s %s --sport %s --j REJECT --reject-with tcp-reset' % (
-                ip1, tcp.dport, ip.src, tcp.sport)
+                ip1, str(tcp.dport), str(ip.src), str(tcp.sport))
             os.system(comando)
             comando = '/sbin/iptables -A INPUT -p tcp -d %s --dport %s -s %s --sport %s --j REJECT --reject-with tcp-reset' % (
-                ip1, tcp.dport, ip.src, tcp.sport)
+                ip1, str(tcp.dport), str(ip.src), str(tcp.sport))
             os.system(comando)
             #print '>>>> ' + comando
 
     #UDP packets
-    elif ip.proto == 17:
-        u = iph_length + eth_length
+    elif str(ip.proto) == '17':
+    	return
+        #u = iph_length + eth_length
         #udph_length = 8
         #udp_header = packet[u:u + 8]
         #now unpack them :)
@@ -287,6 +274,16 @@ def parse_packet(pkt):
         #data_size = len(packet) - h_size
         #get data from the packet
         #data = packet[h_size:]
+
+def go():
+    global ip1
+    global dev
+    from scapy.all import *
+
+    bpffilter = "ip and dst host %s and not src host %s and !(tcp dst port 80 or tcp dst port 443) and (not host %s)" % (
+        ip1, ip1, adminip)
+    DEBUGLOG( "Starting sniffing in (%s = %s)...." % (dev, ip1))
+    sniff(prn=parse_packet,store=0,filter=bpffilter)
 
 
 ######################
