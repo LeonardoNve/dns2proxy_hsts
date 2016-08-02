@@ -33,6 +33,7 @@ from time import sleep
 import argparse
 import json
 import sys
+from scapy.all import *
 
 consultas = {}
 spoof = {}
@@ -221,98 +222,71 @@ def go():
 
     bpffilter = "dst host %s and not src host %s and !(tcp dst port 80 or tcp dst port 443) and (not host %s)" % (
         ip1, ip1, adminip)
-    cap = pcapy.open_live(dev, 255, 1, 0)
-    cap.setfilter(bpffilter)
+    
     DEBUGLOG( "Starting sniffing in (%s = %s)...." % (dev, ip1))
+    sniff(prn=parse_packet,store=0,filter=bpffilter)
+
+    #cap = pcapy.open_live(dev, 255, 1, 0)
+    #cap.setfilter(bpffilter)
 
     #start sniffing packets
-    while True:
-        try:
-            (header, packet) = cap.next()
-            parse_packet(packet)
-        except:
-            pass
-            #DEBUGLOG( ('%s: captured %d bytes, truncated to %d bytes' %(datetime.datetime.now(), header.getlen(), header.getcaplen())))
+    # while True:
+    #     try:
+    #         (header, packet) = cap.next()
+    #         parse_packet(packet)
+    #     except:
+    #         pass
+    #         #DEBUGLOG( ('%s: captured %d bytes, truncated to %d bytes' %(datetime.datetime.now(), header.getlen(), header.getcaplen())))
 
 #function to parse a packet
-def parse_packet(packet):
+def parse_packet(pkt):
     eth_length = 14
     eth_protocol = 8
     global ip1
     global consultas
     global ip2
 
-    #Parse IP packets, IP Protocol number = 8
-    if eth_protocol == 8:
-        #Parse IP header
-        #take first 20 characters for the ip header
-        ip_header = packet[eth_length:20 + eth_length]
+    ip = pkt.getlayer(IP)
 
+    #TCP protocol
+    if ip.proto == 6:
+    	tcp = pkt.getlayer(TCP)
+
+        print
+        print "Paquete tcp: %s %s %s"%(ip.src,tcp.sport,tcp.dport)
+        print
+        if consultas.has_key(ip.src):
+            DEBUGLOG(' ==> Source Address : ' + ip.src + ' *  Destination Address : ' + ip.dst)
+            DEBUGLOG(' Source Port : ' + tcp.sport + ' *  Dest Port : ' + tcp.dport)
+            #            	print '>>>>  '+ip.src+' esta en la lista!!!!.....'
+            comando = 'sh ./IPBouncer.sh %s %s %s %s' % (
+                ip2, tcp.dport, consultas[ip.src], tcp.dport)
+            os.system(comando)
+            #print '>>>> ' + comando
+            comando = '/sbin/iptables -D INPUT -p tcp -d %s --dport %s -s %s --sport %s --j REJECT --reject-with tcp-reset' % (
+                ip1, tcp.dport, ip.src, tcp.sport)
+            os.system(comando)
+            comando = '/sbin/iptables -A INPUT -p tcp -d %s --dport %s -s %s --sport %s --j REJECT --reject-with tcp-reset' % (
+                ip1, tcp.dport, ip.src, tcp.sport)
+            os.system(comando)
+            #print '>>>> ' + comando
+
+    #UDP packets
+    elif ip.proto == 17:
+        u = iph_length + eth_length
+        #udph_length = 8
+        #udp_header = packet[u:u + 8]
         #now unpack them :)
-        iph = unpack('!BBHHHBBH4s4s', ip_header)
-
-        version_ihl = iph[0]
-        #version = version_ihl >> 4
-        ihl = version_ihl & 0xF
-
-        iph_length = ihl * 4
-
-        #ttl = iph[5]
-        protocol = iph[6]
-        s_addr = socket.inet_ntoa(iph[8])
-        d_addr = socket.inet_ntoa(iph[9])
-
-
-
-        #TCP protocol
-        if protocol == 6:
-            t = iph_length + eth_length
-            tcp_header = packet[t:t + 20]
-
-            #now unpack them :)
-            tcph = unpack('!HHLLBBHHH', tcp_header)
-
-            source_port = tcph[0]
-            dest_port = tcph[1]
-            #            sequence = tcph[2]
-            #            acknowledgement = tcph[3]
-            #            doff_reserved = tcph[4]
-            #            tcph_length = doff_reserved >> 4
-
-
-
-            if consultas.has_key(str(s_addr)):
-                DEBUGLOG(' ==> Source Address : ' + str(s_addr) + ' *  Destination Address : ' + str(d_addr))
-                DEBUGLOG(' Source Port : ' + str(source_port) + ' *  Dest Port : ' + str(dest_port))
-                #            	print '>>>>  '+str(s_addr)+' esta en la lista!!!!.....'
-                comando = 'sh ./IPBouncer.sh %s %s %s %s' % (
-                    ip2, str(dest_port), consultas[str(s_addr)], str(dest_port))
-                os.system(comando)
-                #print '>>>> ' + comando
-                comando = '/sbin/iptables -D INPUT -p tcp -d %s --dport %s -s %s --sport %s --j REJECT --reject-with tcp-reset' % (
-                    ip1, str(dest_port), str(s_addr), str(source_port))
-                os.system(comando)
-                comando = '/sbin/iptables -A INPUT -p tcp -d %s --dport %s -s %s --sport %s --j REJECT --reject-with tcp-reset' % (
-                    ip1, str(dest_port), str(s_addr), str(source_port))
-                os.system(comando)
-                #print '>>>> ' + comando
-
-        #UDP packets
-        elif protocol == 17:
-            u = iph_length + eth_length
-            #udph_length = 8
-            #udp_header = packet[u:u + 8]
-            #now unpack them :)
-            #udph = unpack('!HHHH', udp_header)
-            #source_port = udph[0]
-            #dest_port = udph[1]
-            #length = udph[2]
-            #checksum = udph[3]
-            #DEBUGLOG('Source Port : ' + str(source_port) + ' Dest Port : ' + str(dest_port) + ' Length : ' + str(length) + ' Checksum : ' + str(checksum))
-            #h_size = eth_length + iph_length + udph_length
-            #data_size = len(packet) - h_size
-            #get data from the packet
-            #data = packet[h_size:]
+        #udph = unpack('!HHHH', udp_header)
+        #source_port = udph[0]
+        #dest_port = udph[1]
+        #length = udph[2]
+        #checksum = udph[3]
+        #DEBUGLOG('Source Port : ' + str(source_port) + ' Dest Port : ' + str(dest_port) + ' Length : ' + str(length) + ' Checksum : ' + str(checksum))
+        #h_size = eth_length + iph_length + udph_length
+        #data_size = len(packet) - h_size
+        #get data from the packet
+        #data = packet[h_size:]
 
 
 ######################
